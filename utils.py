@@ -42,10 +42,11 @@ def arg_parse():
     parser.add_argument('--n_class', type=int, default=1000)
     parser.add_argument('--p', type=int, default=16)
     parser.add_argument('--dropout_p', type=float, default=.1)
+    parser.add_argument('--pool', type=str, default='cls')
 
     # train.py 관련 하이퍼 파라미터
     parser.add_argument('--lr', type=float, default=0.003)
-    parser.add_argument('--batch_size', type=int, default=4096)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--n_epochs', type=int, default=300)
     parser.add_argument('--optimizer', type=str, default='Adam')
     parser.add_argument('--weight_decay', type=float, default=.3)

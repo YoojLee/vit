@@ -4,36 +4,42 @@ import torch.nn.functional as F
 from collections import OrderedDict
 
 class Embeddings(nn.Module):
-    def __init__(self, input_dim: int, model_dim:int, batch_size:int, n_patches:int):
+    def __init__(self, input_dim: int, model_dim:int, n_patches:int, dropout_p:float):
         """
         patch embedding과 positional embedding 생성하는 부분 (Encoder 인풋 만들어주는 부분이라고 생각하면 됨)
         """
         super().__init__()
         self.input_dim = input_dim
         self.model_dim = model_dim
-        self.batch_size = batch_size
         self.n_patches = n_patches
 
         # projection
         self.projection = nn.Linear(input_dim, model_dim)
         # 여기서는 cls_token을 정의해주면 됨. 어떤 식으로 initialization할지가 문제 -> 이거 이렇게 그냥 randn으로 해줘도 되나?
-        self.cls_token = nn.Parameter(torch.randn(batch_size,1,model_dim)) # 바로 이런 식으로 하면 안될라나?... 1로 해준 다음에 repeat해줘야 하나?
+        self.cls_token = nn.Parameter(torch.randn(1,1,model_dim)) # 바로 이런 식으로 하면 안될라나?... 1로 해준 다음에 repeat해줘야 하나?
 
         # self.position_embedding
-        self.pos_emb = nn.Parameter(torch.randn(batch_size,n_patches+1,model_dim))
+        self.pos_emb = nn.Parameter(torch.randn(1,n_patches+1,model_dim))
+
+        # dropout
+        self.dropout = nn.Dropout(dropout_p)
     
     def forward(self, x):
         """
         x: an image tensor
         """
+        b, _, _ = x.shape
         # linear projection
         proj = self.projection(x)
 
+        # embedding
+        cls_token = self.cls_token.repeat(b,1,1)
+
         # summation
-        patch_emb = torch.cat((self.cls_token, proj), dim = 1) # parameter와 tensor는 동시에 cat이 안되는 게 당연함... 되네? ㅋㅋㅋㅋㅋㅋ히히히히히히
+        patch_emb = torch.cat((cls_token, proj), dim = 1) # parameter와 tensor는 동시에 cat이 안되는 게 당연함... 되네? ㅋㅋㅋㅋㅋㅋ히히히히히히
         
 
-        return self.pos_emb + patch_emb       
+        return self.dropout(self.pos_emb + patch_emb)
 
 
 class MSA(nn.Module):
@@ -46,13 +52,13 @@ class MSA(nn.Module):
             k (int): number of heads
         """
         super().__init__()
+
         self.model_dim = model_dim
         self.n_heads = n_heads
-        #self.d_h = int(model_dim / n_heads)
         self.dropout_p = dropout_p
 
         self.norm = nn.LayerNorm(model_dim)
-        self.linear_qkv = nn.Linear(model_dim, 3*model_dim)# [U_qkv] for changing the dimension 
+        self.linear_qkv = nn.Linear(model_dim, 3*model_dim, bias=False)# [U_qkv] for changing the dimension 
         self.projection = nn.Linear(model_dim, model_dim)
     
     
@@ -93,7 +99,7 @@ class FFN(nn.Module):
 
         self.model_dim = model_dim
         self.hidden_dim = hidden_dim
-        
+
         self.norm = nn.LayerNorm(self.model_dim)
         self.fc1 = nn.Linear(self.model_dim, self.hidden_dim)
         self.fc2 = nn.Linear(self.hidden_dim, self.model_dim)
@@ -103,11 +109,10 @@ class FFN(nn.Module):
         self.block = nn.Sequential(
             self.norm,
             self.fc1,
-            self.dropout,
             self.gelu,
-            self.fc2,
             self.dropout,
-            self.gelu
+            self.fc2,
+            self.dropout # 여기에는 dropout을 쓰지 X.
         )
 
     def forward(self, z):
@@ -124,13 +129,16 @@ class Encoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.dropout_p = dropout_p
         
-        self.msa = MSA(self.model_dim, self.n_heads, self.dropout_p)
-        self.ffn = FFN(self.model_dim, self.hidden_dim, self.dropout_p)
-        self.encoder_block = nn.Sequential(self.msa, self.ffn)
+        # self.msa = MSA(self.model_dim, self.n_heads, self.dropout_p)
+        # self.ffn = FFN(self.model_dim, self.hidden_dim, self.dropout_p)
+        # self.encoder_block = nn.Sequential(self.msa, self.ffn)
         layers = []
 
         for _ in range(self.n_layers):
-            layers.append(self.encoder_block)
+            layers.append(nn.Sequential(
+                MSA(self.model_dim, self.n_heads, self.dropout_p),
+                FFN(self.model_dim, self.hidden_dim, self.dropout_p)
+            )) # 반복해서 넣어줘야 하는 레이어들은 속성으로 할당해서 쓰면 안됨. 그때마다 객체를 새롭게 정의해야 함!
         
         self.encoder = nn.Sequential(*layers)
 
@@ -139,12 +147,16 @@ class Encoder(nn.Module):
 
 
 class ClassificationHead(nn.Module):
-    def __init__(self, model_dim, n_class, training_phase, dropout_p):
+    def __init__(self, model_dim, n_class, training_phase, dropout_p, pool:str):
         super().__init__()
 
         self.model_dim = model_dim
         self.n_class = n_class
         self.training_phase = training_phase
+
+        assert pool in {'cls', 'mean'}, 'pool type must be either cls (cls token) or mean (mean pooling)'
+
+        self.pool = pool
 
         self.norm = nn.LayerNorm(self.model_dim)
         self.hidden = nn.Linear(self.model_dim, self.n_class)
@@ -158,20 +170,21 @@ class ClassificationHead(nn.Module):
             self.block = nn.Sequential(self.hidden) # fine_tuning
     
     def forward(self, encoder_output):
-        y = self.norm(encoder_output[:, 0]) # 첫번째 요소만 slicing & pre-norm 적용
-        return self.block(y)
+        y = encoder_output.mean(dim=1) if self.pool == 'mean' else encoder_output[:, 0] # cls_token으로 predict할 경우 첫번째 요소만 slicing
+
+        return self.block(self.norm(y)) # pre-norm 적용
         
 
 class ViT(nn.Module):
-    def __init__(self, p, model_dim, hidden_dim, n_class, n_heads, n_layers, n_patches, batch_size, dropout_p=.1, training_phase='p'):
+    def __init__(self, p, model_dim, hidden_dim, n_class, n_heads, n_layers, n_patches, dropout_p=.1, training_phase='p', pool='cls'):
         super().__init__()
         input_dim = (p**2)*3
         
         self.vit = nn.Sequential(
             OrderedDict({
-                "embedding": Embeddings(input_dim, model_dim, batch_size, n_patches),
+                "embedding": Embeddings(input_dim, model_dim, n_patches, dropout_p),
                 "encoder": Encoder(n_layers, model_dim, n_heads, hidden_dim, dropout_p),
-                "c_head": ClassificationHead(model_dim, n_class, training_phase, dropout_p)
+                "c_head": ClassificationHead(model_dim, n_class, training_phase, dropout_p, pool)
             })
         )
     
@@ -179,20 +192,23 @@ class ViT(nn.Module):
         return self.vit(x)
 
 
-# if __name__ == "__main__":
-#     kwargs = {
-#         'p': 16,
-#         'model_dim': 768,
-#         'hidden_dim': 3072,
-#         'n_class': 10,
-#         'n_heads': 12,
-#         'n_layers': 12,
-#         'n_patches': 196,
-#         'batch_size': 4
-#     }
-#     vit = ViT(**kwargs)
+if __name__ == "__main__":
+    kwargs = {
+        'p': 16,
+        'model_dim': 768,
+        'hidden_dim': 3072,
+        'n_class': 1000,
+        'n_heads': 12,
+        'n_layers': 12,
+        'n_patches': 196,
+        #'batch_size': 10
+    }
+    vit = ViT(**kwargs)
 
-#     ip = torch.randn(4,196,768)
-#     op = vit(ip)
+    # ip = torch.randn(4,196,768)
+    # op = vit(ip)
 
-#     print(op.shape)
+    
+    params = sum([p.numel() for p in vit.parameters()])
+    print(params)
+    print(vit)

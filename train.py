@@ -63,10 +63,9 @@ def validate(val_loader, model, opt, device):
 def train(train_loader, val_loader, opt, device):
     n_patches = int(opt.crop_size**2 / opt.p**2)
     device_ids = list(map(int, opt.gpu_id.split(",")))
-    batch_size = int(opt.batch_size/len(device_ids))
 
     # model
-    model = ViT(opt.p, opt.model_dim, opt.hidden_dim, opt.n_class, opt.n_heads, opt.n_layers, n_patches, batch_size, opt.dropout_p, opt.training_phase)
+    model = ViT(opt.p, opt.model_dim, opt.hidden_dim, opt.n_class, opt.n_heads, opt.n_layers, n_patches, opt.dropout_p, opt.training_phase, opt.pool)
 
     # multi-gpus
     if torch.cuda.device_count() > 1:
@@ -110,8 +109,8 @@ def train(train_loader, val_loader, opt, device):
             loss.backward()
 
             # gradient clipping
-            if opt.dataset == "ImageNetDataset":
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=opt.max_norm)
+            # if opt.dataset == "ImageNetDataset":
+            #     nn.utils.clip_grad_norm_(model.parameters(), max_norm=opt.max_norm)
             
             # optimize
             optimizer.step()
@@ -151,7 +150,8 @@ def main():
 
     # data loading
     dataset_module = import_module("dataset")
-    augmentation_class = getattr(dataset_module, opt.transforms)
+    aug_module = import_module("augmentation")
+    augmentation_class = getattr(aug_module, opt.transforms)
     dataset_class = getattr(dataset_module, opt.dataset)
 
     augmentation = augmentation_class(opt.resize, opt.crop_size)
