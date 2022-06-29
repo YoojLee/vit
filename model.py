@@ -33,10 +33,10 @@ class Embeddings(nn.Module):
         proj = self.projection(x)
 
         # embedding
-        cls_token = self.cls_token.repeat(b,1,1)
+        cls_token = self.cls_token.repeat(b,1,1) # 이렇게 해야 b,1,model_dim으로 됨.
 
         # summation
-        patch_emb = torch.cat((cls_token, proj), dim = 1) # parameter와 tensor는 동시에 cat이 안되는 게 당연함... 되네? ㅋㅋㅋㅋㅋㅋ히히히히히히
+        patch_emb = torch.cat((cls_token, proj), dim = 1)
         
 
         return self.dropout(self.pos_emb + patch_emb)
@@ -112,7 +112,7 @@ class FFN(nn.Module):
             self.gelu,
             self.dropout,
             self.fc2,
-            self.dropout # 여기에는 dropout을 쓰지 X.
+            self.dropout # 여기에는 gelu를 쓰지 X.
         )
 
     def forward(self, z):
@@ -163,16 +163,17 @@ class ClassificationHead(nn.Module):
         self.dropout = nn.Dropout(dropout_p)
         self.relu = nn.ReLU(inplace=True)
 
-        if self.training_phase == "p":
-            self.block = nn.Sequential(self.hidden, self.dropout, self.relu)
+        # if self.training_phase == "p":
+        #     self.block = nn.Sequential(self.hidden, self.dropout, self.relu)
         
-        else:
-            self.block = nn.Sequential(self.hidden) # fine_tuning
+        # else:
+        #     self.block = nn.Sequential(self.hidden) # fine_tuning
+        self.block = nn.Sequential(self.norm, self.hidden)
     
     def forward(self, encoder_output):
         y = encoder_output.mean(dim=1) if self.pool == 'mean' else encoder_output[:, 0] # cls_token으로 predict할 경우 첫번째 요소만 slicing
 
-        return self.block(self.norm(y)) # pre-norm 적용
+        return self.block(y) # pre-norm 적용
         
 
 class ViT(nn.Module):
@@ -205,10 +206,10 @@ if __name__ == "__main__":
     }
     vit = ViT(**kwargs)
 
-    # ip = torch.randn(4,196,768)
-    # op = vit(ip)
-
+    ip = torch.randn(4,196,768)
+    op = vit(ip)
+    print(op.shape)
     
     params = sum([p.numel() for p in vit.parameters()])
     print(params)
-    print(vit)
+    #print(vit)

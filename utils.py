@@ -52,7 +52,7 @@ def arg_parse():
     parser.add_argument('--weight_decay', type=float, default=.3)
     parser.add_argument('--b1', type=float, default=.9)
     parser.add_argument('--b2', type=float, default=.999)
-    parser.add_argument('--lr_scheduler', type=str, default='CosineAnnealingLR')
+    parser.add_argument('--lr_scheduler', type=str, default='WarmupCosineDecay')
     parser.add_argument('--warmup_steps', type=int, default=10000)
     parser.add_argument('--max_norm', type=int, default=1, help="max norm for gradient clipping")
 
@@ -60,7 +60,7 @@ def arg_parse():
     parser.add_argument("--is_train", type=bool, default=True)
     parser.add_argument("--training_phase", type=str, default="p", help="p for pre-training or f for fine-tuning")
     parser.add_argument("--num_threads", type=int, default=24)
-    parser.add_argument("--gpu_id", type=str, default="0,1")
+    parser.add_argument("--gpu_id", type=str, default="1")
     parser.add_argument("--random_seed", type=int, default=0)
 
     # wandb & logging
@@ -76,8 +76,3 @@ def arg_parse():
     opt = parser.parse_args()
 
     return opt
-    
-    
-
-
-

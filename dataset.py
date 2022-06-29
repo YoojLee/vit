@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import os, glob
-import ray
+from augmentation import *
 from torch.utils.data import Dataset
 
 def make_patches(img:np.ndarray, p:int)->np.ndarray:
@@ -67,7 +67,7 @@ class ImageNetDataset(Dataset):
             _labels = list(map(lambda x: x.strip().split(" "), f.readlines()))
         
         for cls, cls_n, cls_name in _labels:
-            self._label_map[cls] = int(cls_n)
+            self._label_map[cls] = int(cls_n)-1 # label을 zero-index로 넣어주지 않으면 n_classes보다 큰 label이 들어왔다는 error를 리턴하게 됨.
             self.label_names.append(cls_name)
 
     
@@ -101,15 +101,15 @@ class ImageNetDataset(Dataset):
         
 
 
-# if __name__ == "__main__":
-#     train_root = "./ImageNet"
-#     p = 16
-#     is_train = True
-#     transforms = BaseTransform()
+if __name__ == "__main__":
+    train_root = "./ImageNet"
+    p = 16
+    is_train = True
+    transforms = BaseTransform()
 
-#     dataset = ImageNetDataset(train_root, p, is_train, transforms)
+    dataset = ImageNetDataset(train_root, p, is_train, transforms)
 
-#     from torch.utils.data import DataLoader
+    from torch.utils.data import DataLoader
 
-#     train_loader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=24)
-#     print(next(iter(train_loader)))
+    train_loader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=24)
+    print(next(iter(train_loader))[0].shape)
