@@ -3,8 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from collections import OrderedDict
 
+from einops.layers.torch import Rearrange
+
 class Embeddings(nn.Module):
-    def __init__(self, input_dim: int, model_dim:int, n_patches:int, dropout_p:float):
+    def __init__(self, p:int, input_dim: int, model_dim:int, n_patches:int, dropout_p:float):
         """
         patch embedding과 positional embedding 생성하는 부분 (Encoder 인풋 만들어주는 부분이라고 생각하면 됨)
         """
@@ -12,6 +14,11 @@ class Embeddings(nn.Module):
         self.input_dim = input_dim
         self.model_dim = model_dim
         self.n_patches = n_patches
+
+        self.to_patch_embedding = nn.Sequential(
+            Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = p, p2 = p),
+            nn.Linear(self.input_dim, self.model_dim)
+        )
 
         # projection
         self.projection = nn.Linear(input_dim, model_dim)
@@ -28,6 +35,7 @@ class Embeddings(nn.Module):
         """
         x: an image tensor
         """
+        x = self.to_patch_embedding(x)
         b, _, _ = x.shape
         # linear projection
         proj = self.projection(x)
@@ -183,7 +191,7 @@ class ViT(nn.Module):
         
         self.vit = nn.Sequential(
             OrderedDict({
-                "embedding": Embeddings(input_dim, model_dim, n_patches, dropout_p),
+                "embedding": Embeddings(p, input_dim, model_dim, n_patches, dropout_p),
                 "encoder": Encoder(n_layers, model_dim, n_heads, hidden_dim, dropout_p),
                 "c_head": ClassificationHead(model_dim, n_class, training_phase, dropout_p, pool)
             })

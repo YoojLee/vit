@@ -1,8 +1,10 @@
 import cv2
 import numpy as np
 import os, glob
+
 from augmentation import *
 from torch.utils.data import Dataset
+
 
 def make_patches(img:np.ndarray, p:int)->np.ndarray:
     """
@@ -92,12 +94,12 @@ class ImageNetDataset(Dataset):
             img = self.transforms(img)['image'] # albumentations 타입의 transform 적용
         
         # make patches
-        patches = make_patches(img, self.p)
+        #patches = make_patches(img, self.p)
 
         # labels
         label = self.labels[index]
 
-        return patches, label
+        return img, label
         
 
 

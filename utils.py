@@ -1,8 +1,9 @@
 import argparse
-import torch
-import random
+from importlib import import_module
 import numpy as np
-
+import random
+import os
+import torch
 
 def fix_seed(random_seed):
     """
@@ -46,7 +47,7 @@ def arg_parse():
 
     # train.py 관련 하이퍼 파라미터
     parser.add_argument('--lr', type=float, default=0.003)
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--n_epochs', type=int, default=300)
     parser.add_argument('--optimizer', type=str, default='Adam')
     parser.add_argument('--weight_decay', type=float, default=.3)
@@ -59,9 +60,12 @@ def arg_parse():
     # miscellaneous
     parser.add_argument("--is_train", type=bool, default=True)
     parser.add_argument("--training_phase", type=str, default="p", help="p for pre-training or f for fine-tuning")
-    parser.add_argument("--num_threads", type=int, default=24)
-    parser.add_argument("--gpu_id", type=str, default="1")
     parser.add_argument("--random_seed", type=int, default=0)
+
+    # multi-processing
+    parser.add_argument("--num_workers", type=int, default=8)
+    parser.add_argument("--gpu_id", type=int, nargs='+', default=-1) # if -1, use cpu
+    parser.add_argument("--multi_gpu", type=bool, default=True)
 
     # wandb & logging
     parser.add_argument("--prj_name", type=str, default="vit")
@@ -76,3 +80,61 @@ def arg_parse():
     opt = parser.parse_args()
 
     return opt
+
+# checkpoint
+def save_checkpoint(checkpoint, saved_dir, file_name):
+    os.makedirs(saved_dir, exist_ok=True) # make a directory to save a model if not exist.
+
+    output_path = os.path.join(saved_dir, file_name)
+    torch.save(checkpoint, output_path)
+
+
+def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
+    # load model if resume_from is set
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint['model'])
+    start_epoch = checkpoint['epoch']
+
+    if optimizer is not None:
+        optimizer.load_state_dict(checkpoint['optimizer'])
+    
+    if scheduler is not None:
+        scheduler.load_state_dict(checkpoint['scheduler'])
+
+    return model, optimizer, scheduler, start_epoch
+
+
+def get_dataset(opt):
+    # data loading
+    dataset_module = import_module("dataset")
+    aug_module = import_module("augmentation")
+    augmentation_class = getattr(aug_module, opt.transforms)
+    dataset_class = getattr(dataset_module, opt.dataset)
+
+    augmentation = augmentation_class(opt.resize, opt.crop_size)
+    train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info)
+    val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info)
+
+    return train_data, val_data
+
+def topk_accuracy(pred, true, k=1):    
+    pred_topk = pred.topk(k, dim=1)[1] # indices
+    n_correct = torch.sum(torch.sum(pred_topk-true.unsqueeze(1), dim = 1))
+
+    return n_correct / len(pred)
+
+class AverageMeter(object):
+    def __init__(self):
+        self.init()
+    
+    def init(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val*n
+        self.count += n
+        self.avg = self.sum / self.count
