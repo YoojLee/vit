@@ -1,10 +1,10 @@
 import cv2
 import numpy as np
 import os, glob
+
+from augmentation import *
 from torch.utils.data import Dataset
-from typing import List
-import albumentations as A
-from albumentations.pytorch.transforms import ToTensorV2
+
 
 def make_patches(img:np.ndarray, p:int)->np.ndarray:
     """
@@ -37,7 +37,6 @@ def make_patches(img:np.ndarray, p:int)->np.ndarray:
             else:
                 patches = np.vstack([patches, tiles.reshape(1,-1)]) # reshape(-1) or ravel도 사용 가능. flatten은 카피 떠서 쓰는 거
 
-    #print(patches)
     return patches
 
 
@@ -70,7 +69,7 @@ class ImageNetDataset(Dataset):
             _labels = list(map(lambda x: x.strip().split(" "), f.readlines()))
         
         for cls, cls_n, cls_name in _labels:
-            self._label_map[cls] = int(cls_n)
+            self._label_map[cls] = int(cls_n)-1 # label을 zero-index로 넣어주지 않으면 n_classes보다 큰 label이 들어왔다는 error를 리턴하게 됨.
             self.label_names.append(cls_name)
 
     
@@ -95,34 +94,13 @@ class ImageNetDataset(Dataset):
             img = self.transforms(img)['image'] # albumentations 타입의 transform 적용
         
         # make patches
-        patches = make_patches(img, self.p)
+        #patches = make_patches(img, self.p)
 
         # labels
         label = self.labels[index]
 
-        return patches, label
+        return img, label
         
-
-class BaseTransform(object):
-    def __init__(self, downsize=256, crop_size = 224):
-        """
-        Base transform으로 224로 random crop 정의하고 normalize해주기? 얘 normalize 해주나?
-        """
-        self.transform = A.Compose(
-            [   
-                A.Resize(height=downsize, width=downsize),
-                A.RandomCrop(height=crop_size, width=crop_size), # always_apply
-                A.Normalize(),
-                ToTensorV2() # albumentations에서는 normalize 이후에 totensorv2를 사용해줘야 함. (여기서 어차피 c,h,w로 변경)
-            ]
-        )
-
-    def __call__(self, img):
-        """
-        얘는 nn.Module을 상속한 게 아니기 때문에 forward를 구현해줘도 __call__과 연결이 되어 있지 않음.
-        따라서 BaseTransform과 같은 경우에는 __call__ 메소드를 구현해줘야 함.
-        """
-        return self.transform(image=img)
 
 
 if __name__ == "__main__":
@@ -136,4 +114,4 @@ if __name__ == "__main__":
     from torch.utils.data import DataLoader
 
     train_loader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=24)
-    print(next(iter(train_loader)))
+    print(next(iter(train_loader))[0].shape)
