@@ -5,6 +5,9 @@ import random
 import os
 import torch
 
+from contextlib import closing
+import socket
+
 def fix_seed(random_seed):
     """
     fix seed to control any randomness from a code 
@@ -34,7 +37,8 @@ def arg_parse():
     parser.add_argument("--transforms", type=str, default="BaseTransform")
     parser.add_argument("--resize", type=int, default=256)
     parser.add_argument("--crop_size", type=int, default=224)
-    
+    parser.add_argument("--downsample", action="store_true")
+
     # model.py 관련 하이퍼 파라미터
     parser.add_argument('--n_layers', type=int, default=12)
     parser.add_argument('--model_dim', type=int, default=768)
@@ -63,6 +67,7 @@ def arg_parse():
     parser.add_argument("--random_seed", type=int, default=0)
 
     # multi-processing
+    parser.add_argument("--dist_backend", type=str, default='nccl')
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--gpu_id", type=int, nargs='+', default=-1) # if -1, use cpu
     parser.add_argument("--multi_gpu", type=bool, default=True)
@@ -112,14 +117,14 @@ def get_dataset(opt):
     dataset_class = getattr(dataset_module, opt.dataset)
 
     augmentation = augmentation_class(opt.resize, opt.crop_size)
-    train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info)
-    val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info)
+    train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info, opt.downsample)
+    val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info, opt.downsample)
 
     return train_data, val_data
 
 def topk_accuracy(pred, true, k=1):    
     pred_topk = pred.topk(k, dim=1)[1] # indices
-    n_correct = torch.sum(torch.sum(pred_topk-true.unsqueeze(1), dim = 1))
+    n_correct = torch.sum((pred_topk-true.unsqueeze(1))==0) # true: 크기가 b인 1차원 벡터
 
     return n_correct / len(pred)
 
@@ -138,3 +143,9 @@ class AverageMeter(object):
         self.sum += val*n
         self.count += n
         self.avg = self.sum / self.count
+
+def get_open_port():
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(('', 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]

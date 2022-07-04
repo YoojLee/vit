@@ -140,8 +140,13 @@ def train(train_loader, val_loader, opt, device, total_len):
 
             # scheduler -> scheduler는 정확히 어디서 step을 밟아야 하는지
             scheduler.step()
+            wandb.log(
+                {
+                    "Learning Rate": optimizer.param_groups[0]['lr']
+                }
+            )
         # after every epoch, Run validate
-        validate(val_loader, model, opt, device)
+        validate(val_loader, model, device)
 
 
 
@@ -165,8 +170,8 @@ def main():
     dataset_class = getattr(dataset_module, opt.dataset)
 
     augmentation = augmentation_class(opt.resize, opt.crop_size)
-    train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info)
-    val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info)
+    train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info, opt.downsample)
+    val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info, opt.downsample)
 
     # for dataloader reproducibility
     g = torch.Generator()
