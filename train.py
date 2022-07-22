@@ -1,33 +1,14 @@
 from importlib import import_module
 
-from matplotlib.colors import same_color
-
 from model import *
 from utils import *
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-import torch.distributed as dist
-from torch.utils.data.distributed import DistributedSampler
 
-import os
 import tqdm
 import wandb
-from PIL import Image
-
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
-def setup(rank, world_size):
-    dist.init_process_group(
-            backend='nccl',
-            init_method='tcp://127.0.0.1:3456',
-            world_size=world_size,
-            rank=rank
-    )
-
-def cleanup():
-    dist.destroy_process_group()
 
 def validate(val_loader, model, device):
     model.eval()
