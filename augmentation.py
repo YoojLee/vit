@@ -22,6 +22,7 @@ class BaseTransform(object):
         """
         return self.transform(image=img)
 
+
 class RandAugMixUpAugTransform(object):
     def __init__(self):
         pass

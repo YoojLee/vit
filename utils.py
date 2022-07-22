@@ -5,9 +5,6 @@ import random
 import os
 import torch
 
-from contextlib import closing
-import socket
-
 def fix_seed(random_seed):
     """
     fix seed to control any randomness from a code 
@@ -47,11 +44,12 @@ def arg_parse():
     parser.add_argument('--n_class', type=int, default=1000)
     parser.add_argument('--p', type=int, default=16)
     parser.add_argument('--dropout_p', type=float, default=.1)
-    parser.add_argument('--pool', type=str, default='cls')
+    parser.add_argument('--pool', type=str, default='mean') # gap 적용해보기
+    parser.add_argument('--drop_hidden', type=bool, default=True) # classification head에서 hidden layer drop
 
     # train.py 관련 하이퍼 파라미터
     parser.add_argument('--lr', type=float, default=0.003)
-    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--n_epochs', type=int, default=300)
     parser.add_argument('--optimizer', type=str, default='Adam')
     parser.add_argument('--weight_decay', type=float, default=.3)
@@ -60,6 +58,7 @@ def arg_parse():
     parser.add_argument('--lr_scheduler', type=str, default='WarmupCosineDecay')
     parser.add_argument('--warmup_steps', type=int, default=10000)
     parser.add_argument('--max_norm', type=int, default=1, help="max norm for gradient clipping")
+    parser.add_argument('--accumulation_steps', type=int, default=32)
 
     # miscellaneous
     parser.add_argument("--is_train", type=bool, default=True)
@@ -71,6 +70,8 @@ def arg_parse():
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--gpu_id", type=int, nargs='+', default=-1) # if -1, use cpu
     parser.add_argument("--multi_gpu", type=bool, default=True)
+    parser.add_argument("--world_size", type=int, default=1, help="number of machines")
+    parser.add_argument("--rank", type=int, default=0)
 
     # wandb & logging
     parser.add_argument("--prj_name", type=str, default="vit")
@@ -122,11 +123,11 @@ def get_dataset(opt):
 
     return train_data, val_data
 
-def topk_accuracy(pred, true, k=1):    
+def topk_accuracy(pred, true, k=1):
     pred_topk = pred.topk(k, dim=1)[1] # indices
-    n_correct = torch.sum((pred_topk-true.unsqueeze(1))==0) # true: 크기가 b인 1차원 벡터
+    n_correct = torch.sum(pred_topk.squeeze() == true) # true: 크기가 b인 1차원 벡터
 
-    return n_correct / len(pred)
+    return n_correct / len(true)
 
 class AverageMeter(object):
     def __init__(self):
@@ -143,9 +144,3 @@ class AverageMeter(object):
         self.sum += val*n
         self.count += n
         self.avg = self.sum / self.count
-
-def get_open_port():
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(('', 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]

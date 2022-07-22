@@ -71,11 +71,6 @@ def validate(val_loader, model, device):
                 }
             )
 
-    # class 별 정확도 출력
-    # for classname, correct_count in correct_pred.items():
-    #     accuracy = 100 * float(correct_count) / total_pred[classname]
-    #     print(f'Accuracy for class: {classname:5s} is {accuracy:.1f} %')
-
 
 
 def train(train_loader, val_loader, opt, device, total_len):

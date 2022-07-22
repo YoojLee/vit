@@ -98,9 +98,6 @@ class ImageNetDataset(Dataset):
 
         if self.transforms:
             img = self.transforms(img)['image'] # albumentations 타입의 transform 적용
-        
-        # make patches
-        #patches = make_patches(img, self.p)
 
         # labels
         label = self.labels[index]
@@ -123,6 +120,8 @@ if __name__ == "__main__":
     mid_time = time.time()
 
     print(f"Elapsed Time for creating dataset: {round(mid_time-start_time, 4)} sec") # 3초
+
+    print(dataset.labels)
     
     from torch.utils.data import DataLoader
 
