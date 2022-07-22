@@ -1,33 +1,14 @@
 from importlib import import_module
 
-from matplotlib.colors import same_color
-
 from model import *
 from utils import *
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-import torch.distributed as dist
-from torch.utils.data.distributed import DistributedSampler
 
-import os
 import tqdm
 import wandb
-from PIL import Image
-
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
-def setup(rank, world_size):
-    dist.init_process_group(
-            backend='nccl',
-            init_method='tcp://127.0.0.1:3456',
-            world_size=world_size,
-            rank=rank
-    )
-
-def cleanup():
-    dist.destroy_process_group()
 
 def validate(val_loader, model, device):
     model.eval()
@@ -70,11 +51,6 @@ def validate(val_loader, model, device):
                     'Validation Accuracy': round(n_correct/total, 4)
                 }
             )
-
-    # class 별 정확도 출력
-    # for classname, correct_count in correct_pred.items():
-    #     accuracy = 100 * float(correct_count) / total_pred[classname]
-    #     print(f'Accuracy for class: {classname:5s} is {accuracy:.1f} %')
 
 
 
@@ -140,8 +116,13 @@ def train(train_loader, val_loader, opt, device, total_len):
 
             # scheduler -> scheduler는 정확히 어디서 step을 밟아야 하는지
             scheduler.step()
+            wandb.log(
+                {
+                    "Learning Rate": optimizer.param_groups[0]['lr']
+                }
+            )
         # after every epoch, Run validate
-        validate(val_loader, model, opt, device)
+        validate(val_loader, model, device)
 
 
 
@@ -165,8 +146,8 @@ def main():
     dataset_class = getattr(dataset_module, opt.dataset)
 
     augmentation = augmentation_class(opt.resize, opt.crop_size)
-    train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info)
-    val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info)
+    train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info, opt.downsample)
+    val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info, opt.downsample)
 
     # for dataloader reproducibility
     g = torch.Generator()

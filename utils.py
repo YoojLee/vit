@@ -34,7 +34,8 @@ def arg_parse():
     parser.add_argument("--transforms", type=str, default="BaseTransform")
     parser.add_argument("--resize", type=int, default=256)
     parser.add_argument("--crop_size", type=int, default=224)
-    
+    parser.add_argument("--downsample", action="store_true")
+
     # model.py 관련 하이퍼 파라미터
     parser.add_argument('--n_layers', type=int, default=12)
     parser.add_argument('--model_dim', type=int, default=768)
@@ -43,11 +44,12 @@ def arg_parse():
     parser.add_argument('--n_class', type=int, default=1000)
     parser.add_argument('--p', type=int, default=16)
     parser.add_argument('--dropout_p', type=float, default=.1)
-    parser.add_argument('--pool', type=str, default='cls')
+    parser.add_argument('--pool', type=str, default='mean') # gap 적용해보기
+    parser.add_argument('--drop_hidden', type=bool, default=True) # classification head에서 hidden layer drop
 
     # train.py 관련 하이퍼 파라미터
     parser.add_argument('--lr', type=float, default=0.003)
-    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--n_epochs', type=int, default=300)
     parser.add_argument('--optimizer', type=str, default='Adam')
     parser.add_argument('--weight_decay', type=float, default=.3)
@@ -56,6 +58,7 @@ def arg_parse():
     parser.add_argument('--lr_scheduler', type=str, default='WarmupCosineDecay')
     parser.add_argument('--warmup_steps', type=int, default=10000)
     parser.add_argument('--max_norm', type=int, default=1, help="max norm for gradient clipping")
+    parser.add_argument('--accumulation_steps', type=int, default=32)
 
     # miscellaneous
     parser.add_argument("--is_train", type=bool, default=True)
@@ -63,9 +66,12 @@ def arg_parse():
     parser.add_argument("--random_seed", type=int, default=0)
 
     # multi-processing
+    parser.add_argument("--dist_backend", type=str, default='nccl')
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--gpu_id", type=int, nargs='+', default=-1) # if -1, use cpu
     parser.add_argument("--multi_gpu", type=bool, default=True)
+    parser.add_argument("--world_size", type=int, default=1, help="number of machines")
+    parser.add_argument("--rank", type=int, default=0)
 
     # wandb & logging
     parser.add_argument("--prj_name", type=str, default="vit")
@@ -112,16 +118,16 @@ def get_dataset(opt):
     dataset_class = getattr(dataset_module, opt.dataset)
 
     augmentation = augmentation_class(opt.resize, opt.crop_size)
-    train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info)
-    val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info)
+    train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info, opt.downsample)
+    val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info, opt.downsample)
 
     return train_data, val_data
 
-def topk_accuracy(pred, true, k=1):    
+def topk_accuracy(pred, true, k=1):
     pred_topk = pred.topk(k, dim=1)[1] # indices
-    n_correct = torch.sum(torch.sum(pred_topk-true.unsqueeze(1), dim = 1))
+    n_correct = torch.sum(pred_topk.squeeze() == true) # true: 크기가 b인 1차원 벡터
 
-    return n_correct / len(pred)
+    return n_correct / len(true)
 
 class AverageMeter(object):
     def __init__(self):

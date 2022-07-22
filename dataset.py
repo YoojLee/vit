@@ -5,6 +5,8 @@ import os, glob
 from augmentation import *
 from torch.utils.data import Dataset
 
+import time
+
 
 def make_patches(img:np.ndarray, p:int)->np.ndarray:
     """
@@ -41,7 +43,7 @@ def make_patches(img:np.ndarray, p:int)->np.ndarray:
 
 
 class ImageNetDataset(Dataset):
-    def __init__(self, data_root:str, p:int, is_train:bool, transforms=None, label_info:str="label.txt"):
+    def __init__(self, data_root:str, p:int, is_train:bool, transforms=None, label_info:str="label.txt", downsample=False):
         """
         Dataset Class for ViT
 
@@ -76,6 +78,10 @@ class ImageNetDataset(Dataset):
         # 아래 데이터 정의하는 부분은 validation에서도 문제는 없으나 fine-tuning할 때는 어떻게 될지 잘 모르겠음.
         self.img_list = glob.glob(f"{self.data_root}/**/*.JPEG", recursive=True) # image-net과 같은 경우에는 확장자가 JPEG only.
         self.labels = list(map(lambda x: self._label_map[x.split("/")[-2]], self.img_list))
+
+        if downsample: # 1/10으로 downsampling
+            self.img_list = self.img_list[::100]
+            self.labels = self.labels[::100]
         
 
     def __len__(self):
@@ -92,9 +98,6 @@ class ImageNetDataset(Dataset):
 
         if self.transforms:
             img = self.transforms(img)['image'] # albumentations 타입의 transform 적용
-        
-        # make patches
-        #patches = make_patches(img, self.p)
 
         # labels
         label = self.labels[index]
@@ -109,9 +112,22 @@ if __name__ == "__main__":
     is_train = True
     transforms = BaseTransform()
 
-    dataset = ImageNetDataset(train_root, p, is_train, transforms)
+    start_time = time.time()
 
+    dataset = ImageNetDataset(train_root, p, is_train, transforms, downsample=False) # 원래는 1,281,167 장의 이미지
+    print(len(dataset))
+
+    mid_time = time.time()
+
+    print(f"Elapsed Time for creating dataset: {round(mid_time-start_time, 4)} sec") # 3초
+
+    print(dataset.labels)
+    
     from torch.utils.data import DataLoader
 
-    train_loader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=24)
-    print(next(iter(train_loader))[0].shape)
+    
+    train_loader = DataLoader(dataset, batch_size=128, shuffle=True, num_workers=24)
+
+    print(next(iter(train_loader))[0].shape) # 9초 (패치화시킬 경우 11초)
+    end_time = time.time()
+    print(f"Elapsed Time for Loading Data: {round(end_time-start_time, 4)} sec")
