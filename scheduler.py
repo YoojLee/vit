@@ -18,7 +18,7 @@ class WarmupLinearDecay(LambdaLR):
         super(WarmupLinearDecay, self).__init__(optimizer, self.lr_lambda, last_epoch, verbose) # self.lr_lambda를 메소드로 정의하기
     def lr_lambda(self, step):
         """
-        base_lr 앞에 있는 계수를 리턴.
+        base_lr 앞에 있는 계수를 리턴.  
         """
         if step < self.warmup_steps: # warmup_steps 이전까지는 linear warmup이 적용됨.
             # 이게 왜 linear인지 생각해보자. lr_lambda는 step에 대한 함수임. 애초에 base_lr이 계수가 되는 구조임.
@@ -75,8 +75,8 @@ class WarmupCosineAnnealing(LambdaLR):
         else:
             progress = min(1, max(0, self.t_cur / self.period)) # clipping to range [0,1]
             
-            if self.t_cur and self.t_cur % self.period == 0: # 한 주기가 끝나면
-                self.period *= (1+self.cycle_factor)
+            if self.t_cur == self.period: # 한 주기가 끝나면
+                self.period = int(self.period*(1+self.cycle_factor)) # 여기 int로 안바꿔주면, 주기가 소수가 되기 때문에 t_cur와의 비교가 어려움.
                 self.t_cur = 0
             else:
                 self.t_cur += 1
