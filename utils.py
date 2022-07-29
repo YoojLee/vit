@@ -51,11 +51,11 @@ def arg_parse():
     parser.add_argument('--lr', type=float, default=0.003)
     parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--n_epochs', type=int, default=300)
-    parser.add_argument('--optimizer', type=str, default='Adam')
+    parser.add_argument('--optimizer', type=str, default='AdamW')
     parser.add_argument('--weight_decay', type=float, default=.3)
     parser.add_argument('--b1', type=float, default=.9)
     parser.add_argument('--b2', type=float, default=.999)
-    parser.add_argument('--lr_scheduler', type=str, default='WarmupCosineDecay')
+    parser.add_argument('--lr_scheduler', type=str, default='WarmupCosineAnnealing')
     parser.add_argument('--warmup_steps', type=int, default=10000)
     parser.add_argument('--max_norm', type=int, default=1, help="max norm for gradient clipping")
     parser.add_argument('--accumulation_steps', type=int, default=32)
@@ -117,7 +117,7 @@ def get_dataset(opt):
     augmentation_class = getattr(aug_module, opt.transforms)
     dataset_class = getattr(dataset_module, opt.dataset)
 
-    augmentation = augmentation_class(opt.resize, opt.crop_size)
+    augmentation = augmentation_class(opt.crop_size)
     train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info, opt.downsample)
     val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info, opt.downsample)
 
