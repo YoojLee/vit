@@ -1,5 +1,4 @@
 from importlib import import_module
-from augmentation import BaseTransform
 
 from model import *
 from utils import *
@@ -7,10 +6,9 @@ from utils import *
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torchvision.datasets import CIFAR100
-import torchvision.transforms as tt
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
+from torch.cuda.amp import autocast, GradScaler
 
 from datetime import timedelta
 from tqdm import tqdm
@@ -23,7 +21,7 @@ def main():
     opt = arg_parse()
     fix_seed(opt.random_seed)
 
-    ngpus_per_node = torch.cuda.device_count()
+    ngpus_per_node = len(opt.gpu_id)
     opt.world_size = ngpus_per_node * opt.world_size
     torch.multiprocessing.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, opt)) # process 뿌려주기
     
@@ -63,11 +61,19 @@ def main_worker(gpu, ngpus_per_node, opt):
     num_workers = int(opt.num_workers / ngpus_per_node)
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[opt.gpu])
 
+    # wandb init
+    if opt.rank == 0:
+        wandb.init(project=opt.prj_name, name=f"{opt.exp_name}", entity="yoojlee", config=vars(opt))
+        wandb.watch(model, log='all', log_freq=opt.log_interval)
+
     criterion = nn.CrossEntropyLoss(reduction='mean').cuda(opt.gpu)
     
     # optimizer
     optimizer_class = getattr(import_module("torch.optim"), opt.optimizer)
     optimizer = optimizer_class(model.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2), weight_decay=opt.weight_decay)
+
+    # scaler
+    scaler = GradScaler() 
 
     # dataset
     train_dataset, val_dataset = get_dataset(opt) # 여기가 하나의 병목
@@ -86,17 +92,13 @@ def main_worker(gpu, ngpus_per_node, opt):
     # scheduler
     if opt.period == -1:
         opt.period = int((len(train_dataset) / (opt.batch_size*opt.accumulation_steps)) * opt.n_epochs)
-        wandb.config.update({"period":opt.period})
+        if opt.rank == 0:
+            wandb.config.update({"period":opt.period}, allow_val_change=True)
+
     scheduler_class = getattr(import_module("scheduler"), opt.lr_scheduler)
     scheduler = scheduler_class(optimizer, opt.warmup_steps, opt.period, opt.warmup_restart, cycle_factor=opt.cycle_factor, verbose=opt.lr_verbose) # annealing에 period = total_step으로 넣어주면 cosine decay로 적용될 듯.
 
-    
 
-    # wandb init
-    if opt.rank == 0:
-        wandb.init(project=opt.prj_name, name=f"{opt.exp_name}", entity="yoojlee", config=vars(opt))
-        wandb.watch(model, log='all', log_freq=opt.log_interval)
-        
     # resume from
     if opt.resume_from:
         model, optimizer, scheduler, start_epoch = load_checkpoint(opt.last_checkpoint_dir, model, optimizer, scheduler, opt.rank)
@@ -114,23 +116,26 @@ def main_worker(gpu, ngpus_per_node, opt):
         # reset gradients
         optimizer.zero_grad()
 
-        _ = train(train_loader, model, criterion, optimizer, scheduler, epoch, opt) # model.module과 model의 차이?
-        acc_score, _ = validate(val_loader, model, criterion, epoch, opt)
+        _ = train(train_loader, model, criterion, optimizer, scheduler, scaler, epoch, opt) # model.module과 model의 차이?
         
-        if (opt.rank==0) and (best_top1 < acc_score):
-            best_top1 = acc_score
-            print(f"Saving Weights at Accuracy {best_top1}")
-            save_checkpoint(
-                {
-                    'epoch': epoch,
-                    'model': model.state_dict(),
-                    'best_top1': best_top1,
-                    'optimizer': optimizer.state_dict(),
-                    #'scheduler': scheduler.state_dict()
-                }, os.path.join(opt.checkpoint_dir, opt.exp_name), f"vit_{epoch}_{best_top1}.pt" # 이 부분이 문제였음. 애초에 error가 발생해도 프로그램이 멈추는 게 아니라 그냥 계속 좀비 프로세스처럼 남아있는 느낌..?
-            )
-        
-        print(f"Best Accuracy: {best_top1}")
+        if (opt.rank==0):
+            acc_score, _ = validate(val_loader, model, criterion, epoch, opt)
+
+            if (best_top1 < acc_score):
+                best_top1 = acc_score
+                print(f"Saving Weights at Accuracy {best_top1}")
+                save_checkpoint(
+                    {
+                        'epoch': epoch,
+                        'model': model.state_dict(),
+                        'best_top1': best_top1,
+                        'optimizer': optimizer.state_dict(),
+                        'scheduler': scheduler.state_dict()
+                    }, os.path.join(opt.checkpoint_dir, opt.exp_name), f"vit_{epoch}_{best_top1}.pt" # 이 부분이 문제였음. 애초에 error가 발생해도 프로그램이 멈추는 게 아니라 그냥 계속 좀비 프로세스처럼 남아있는 느낌..?
+                )
+            
+                print(f"Best Accuracy: {best_top1}")
+
         torch.cuda.empty_cache()
     
     if opt.rank==0:
@@ -139,7 +144,7 @@ def main_worker(gpu, ngpus_per_node, opt):
     dist.destroy_process_group()
 
 
-def train(train_loader, model, criterion, optimizer, scheduler, epoch, opt): # 하나의 epoch 내에서 동작하는 함수
+def train(train_loader, model, criterion, optimizer, scheduler, scaler, epoch, opt): # 하나의 epoch 내에서 동작하는 함수
     model.train()
     acc_score, running_loss = AverageMeter(), AverageMeter() # 이 부분을 log_interval에서의 average metric으로 사용할 수 있도록 바꿔놔야할 것 같음.
     pbar = tqdm(enumerate(train_loader), total=len(train_loader)) # 왜인지는 모르겠는데 여기도 하나의 병목
@@ -150,16 +155,15 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, opt): # �
         labels = labels.cuda()
         
         # forward
-        y_pred = model(image)
-        loss = criterion(y_pred, labels) # The input is expected to contain raw, unnormalized scores for each class
-        loss = loss / opt.accumulation_steps
-        if round(loss.item(), 4) == 0.0: # 왜 중간에 loss가 0인 현상이 발생하는 거지?
-            print(loss.item())
-            print(y_pred)
-        loss.backward()
+        with autocast():
+            y_pred = model(image)
+            loss = criterion(y_pred, labels) # The input is expected to contain raw, unnormalized scores for each class
+            loss = loss / opt.accumulation_steps
+        
+        scaler.scale(loss).backward()
 
         running_loss.update(loss.item()*opt.accumulation_steps,  image.size(0))
-        acc_score.update(topk_accuracy(y_pred.clone().detach().cpu(), labels.cpu()).item(), image.size(0))
+        acc_score.update(topk_accuracy(y_pred.clone().detach(), labels).item(), image.size(0))
         
         if (step+1) % opt.accumulation_steps == 0:
 
@@ -167,7 +171,9 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, opt): # �
             if opt.dataset == "ImageNetDataset":
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=opt.max_norm)
 
-            optimizer.step()
+            # optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
 
             # scheduler step
             scheduler.step()
@@ -177,7 +183,7 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, opt): # �
 
             # logging
             dist.barrier()
-            if (opt.rank == 0) and (opt.log_interval > 0): # and ((step+1) % opt.log_interval == 0):
+            if (opt.rank == 0) and ((step+1) % opt.log_interval == 0):
                 wandb.log(
                         {
                             "Training Loss": round(running_loss.avg, 4),
