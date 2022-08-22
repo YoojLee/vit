@@ -1,7 +1,6 @@
 # reference: https://github.com/jeonsworld/ViT-pytorch/
 
 import math
-import torch
 from torch.optim.lr_scheduler import LambdaLR
 
 class WarmupLinearDecay(LambdaLR):
@@ -56,29 +55,48 @@ class WarmupCosineDecay(LambdaLR):
 
 class WarmupCosineAnnealing(LambdaLR):
     """
-    Cosine Annealing after Linear Warm-Up.
+    Cosine Annealing with Warm Restarts after Linear Warm-Up.
     For Cosine Annealing, minimum learning rate implicitly set to zero and maximum learning rate implicitly set to the initial learning rate.
     """
-    def __init__(self, optimizer, warmup_steps, period, cycle_factor=.1, last_epoch=-1, verbose=False):
+    def __init__(self, optimizer, warmup_steps, period, warmup_restart, cycle_factor=1, ceil_lr_factor=0, floor_lr_factor=1, last_epoch=-1, verbose=False):
+        """
+        - Args
+            optimizer: optimizer to adjust a learning rate
+            warmup_steps: number of steps for warm up (it occurs only once at the beginning of training)
+            period: period for cosine annealing
+            warmup_restart: if larger than zero, the learning rate is reset to its initial state with linear warm-up, not an immediate manner.
+            cycle_factor: a factor for adjusting a length of the period. (default=.2)
+            last_epoch: at which epoch(or step) the training progress is (default=-1)
+        """
         self.warmup_steps = warmup_steps
         self.t_cur = 0
         self.period = period
+        self.warmup_restart = warmup_restart
         self.cycle_factor = float(cycle_factor)
+        self.ceil_lr_factor = float(ceil_lr_factor)
+        self.floor_lr_factor = float(floor_lr_factor)
         super(WarmupCosineAnnealing, self).__init__(optimizer, self.lr_lambda, last_epoch, verbose)
 
     def lr_lambda(self, step):
         # warm-up
         if step < self.warmup_steps:
             return float(step) / float(max(1, self.warmup_steps))
-        
-        # cosine annealing
-        else:
-            progress = min(1, max(0, self.t_cur / self.period)) # clipping to range [0,1]
-            
-            if self.t_cur == self.period: # 한 주기가 끝나면
-                self.period = int(self.period*(1+self.cycle_factor)) # 여기 int로 안바꿔주면, 주기가 소수가 되기 때문에 t_cur와의 비교가 어려움.
-                self.t_cur = 0
-            else:
-                self.t_cur += 1
 
-            return 0.5 * (1+math.cos(progress*math.pi))
+        # cosine annealing
+        if (step // self.warmup_steps == 1):
+            progress = min(self.floor_lr_factor, max(self.ceil_lr_factor, (self.t_cur) / (self.period))) # clipping to range [0,1]
+        else:
+            if (self.t_cur < self.warmup_restart):
+            # warm restarts
+                self.t_cur += 1
+                return float(self.t_cur-1) / float(max(1, self.warmup_restart))
+            else:
+                progress =  min(self.floor_lr_factor, max(self.ceil_lr_factor, (self.t_cur-self.warmup_restart) / (self.period-self.warmup_restart)))
+                    
+        if self.t_cur == self.period: # 한 주기가 끝나면
+            self.period = int(self.period*(1+self.cycle_factor)) # 여기 int로 안바꿔주면, 주기가 소수가 되기 때문에 t_cur와의 비교가 어려움.
+            self.t_cur = 0
+        else:
+            self.t_cur += 1
+        
+        return 0.5 * (1+math.cos(progress*math.pi))
