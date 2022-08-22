@@ -120,14 +120,3 @@ if __name__ == "__main__":
     mid_time = time.time()
 
     print(f"Elapsed Time for creating dataset: {round(mid_time-start_time, 4)} sec") # 3초
-
-    print(dataset.labels)
-    
-    from torch.utils.data import DataLoader
-
-    
-    train_loader = DataLoader(dataset, batch_size=128, shuffle=True, num_workers=24)
-
-    print(next(iter(train_loader))[0].shape) # 9초 (패치화시킬 경우 11초)
-    end_time = time.time()
-    print(f"Elapsed Time for Loading Data: {round(end_time-start_time, 4)} sec")

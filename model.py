@@ -216,5 +216,5 @@ if __name__ == "__main__":
     # op = vit(ip)
     # print(op.shape)
     
-    # params = sum([p.numel() for p in vit.parameters()])
-    # print(params)
+    params = sum(p.numel() for p in vit.parameters())
+    print(params)

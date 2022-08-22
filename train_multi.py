@@ -3,7 +3,6 @@ from augmentation import BaseTransform
 
 from model import *
 from utils import *
-import model_ref
 
 import torch
 import torch.nn as nn
@@ -59,7 +58,6 @@ def main_worker(gpu, ngpus_per_node, opt):
 
     n_patches = int(opt.crop_size**2 / opt.p**2)
     model = ViT(opt.p, opt.model_dim, opt.hidden_dim, opt.n_class, opt.n_heads, opt.n_layers, n_patches, opt.dropout_p, opt.training_phase, opt.pool, opt.drop_hidden)
-    # model = model_ref.ViT(opt.crop_size, opt.p, opt.n_class, opt.model_dim, opt.n_layers, opt.n_heads, opt.hidden_dim)
     model.cuda(opt.gpu)
     batch_size = int(opt.batch_size / ngpus_per_node)
     num_workers = int(opt.num_workers / ngpus_per_node)
@@ -72,15 +70,7 @@ def main_worker(gpu, ngpus_per_node, opt):
     optimizer = optimizer_class(model.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2), weight_decay=opt.weight_decay)
 
     # dataset
-    # train_dataset, val_dataset = get_dataset(opt) # 여기가 하나의 병목
-    train_transform = tt.Compose([
-        tt.RandomResizedCrop(opt.crop_size),
-        tt.ToTensor(),
-        tt.Normalize((0.5074,0.4867,0.4411),(0.2011,0.1987,0.2025))
-    ])
-
-    train_dataset = CIFAR100(download=True, root="./data", transform=train_transform)
-    val_dataset = CIFAR100(root="./data", train=False, transform=train_transform)
+    train_dataset, val_dataset = get_dataset(opt) # 여기가 하나의 병목
 
     train_sampler = DistributedSampler(train_dataset)
 
@@ -94,9 +84,13 @@ def main_worker(gpu, ngpus_per_node, opt):
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
     # scheduler
-    total_step = (len(train_dataset) / opt.batch_size) * opt.n_epochs
+    if opt.period == -1:
+        opt.period = int((len(train_dataset) / (opt.batch_size*opt.accumulation_steps)) * opt.n_epochs)
+        wandb.config.update({"period":opt.period})
     scheduler_class = getattr(import_module("scheduler"), opt.lr_scheduler)
-    scheduler = scheduler_class(optimizer, opt.warmup_steps, total_step, verbose=False)
+    scheduler = scheduler_class(optimizer, opt.warmup_steps, opt.period, opt.warmup_restart, cycle_factor=opt.cycle_factor, verbose=opt.lr_verbose) # annealing에 period = total_step으로 넣어주면 cosine decay로 적용될 듯.
+
+    
 
     # wandb init
     if opt.rank == 0:
@@ -105,7 +99,10 @@ def main_worker(gpu, ngpus_per_node, opt):
         
     # resume from
     if opt.resume_from:
-        model, optimizer, scheduler, start_epoch = load_checkpoint(opt.checkpoint_dir, model, optimizer, scheduler)
+        model, optimizer, scheduler, start_epoch = load_checkpoint(opt.last_checkpoint_dir, model, optimizer, scheduler, opt.rank)
+        if scheduler.__dict__['cycle_factor'] != opt.cycle_factor:
+            print("Updating cycle factor of scheduler")
+            scheduler.__dict__['cycle_factor'] = opt.cycle_factor
 
     else:
         start_epoch = 0
@@ -129,8 +126,8 @@ def main_worker(gpu, ngpus_per_node, opt):
                     'model': model.state_dict(),
                     'best_top1': best_top1,
                     'optimizer': optimizer.state_dict(),
-                    'scheduler': scheduler.state_dict()
-                }, opt.checkpoint_dir, f"vit_{epoch}_{best_top1}.pt" # 이 부분이 문제였음. 애초에 error가 발생해도 프로그램이 멈추는 게 아니라 그냥 계속 좀비 프로세스처럼 남아있는 느낌..?
+                    #'scheduler': scheduler.state_dict()
+                }, os.path.join(opt.checkpoint_dir, opt.exp_name), f"vit_{epoch}_{best_top1}.pt" # 이 부분이 문제였음. 애초에 error가 발생해도 프로그램이 멈추는 게 아니라 그냥 계속 좀비 프로세스처럼 남아있는 느낌..?
             )
         
         print(f"Best Accuracy: {best_top1}")
@@ -156,7 +153,8 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, opt): # �
         y_pred = model(image)
         loss = criterion(y_pred, labels) # The input is expected to contain raw, unnormalized scores for each class
         loss = loss / opt.accumulation_steps
-        if loss.item() == 0.0: # 왜 중간에 loss가 0인 현상이 발생하는 거지?
+        if round(loss.item(), 4) == 0.0: # 왜 중간에 loss가 0인 현상이 발생하는 거지?
+            print(loss.item())
             print(y_pred)
         loss.backward()
 
@@ -184,7 +182,8 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, opt): # �
                         {
                             "Training Loss": round(running_loss.avg, 4),
                             "Training Accuracy": round(acc_score.avg, 4),
-                            "Learning Rate (from scheduler)": scheduler.get_last_lr()[0]
+                            # "Learning Rate (from scheduler)": scheduler.get_last_lr()[0]
+                            "Learning Rate": optimizer.param_groups[0]['lr']
                         }
                 )
                 running_loss.init()
@@ -195,7 +194,7 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, opt): # �
 
     return running_loss.avg
 
-def validate(val_loader, model, criterion, epoch, opt):
+def validate(val_loader, model, criterion, epoch, opt): 
     model.eval()
 
     losses = AverageMeter()
@@ -216,7 +215,7 @@ def validate(val_loader, model, criterion, epoch, opt):
             description = f'Current Epoch: {epoch+1} || Validation Step: {step+1}/{len(val_loader)} || Validation Loss: {round(loss.item(), 4)} || Validation Accuracy: {round(acc_score.avg, 4)}'
             pbar.set_description(description)
 
-     # rank == 0 으로 지정해주지 않으면 wandb init을 시행하지 않은 것으로 간주함.
+    # rank == 0 으로 지정해주지 않으면 wandb init을 시행하지 않은 것으로 간주함.
     dist.barrier()
     if opt.rank == 0:
         wandb.log(

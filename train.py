@@ -6,6 +6,8 @@ from utils import *
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from torchvision.datasets import CIFAR100
+import torchvision.transforms as tt
 
 import tqdm
 import wandb
@@ -58,7 +60,7 @@ def train(train_loader, val_loader, opt, device, total_len):
     n_patches = int(opt.crop_size**2 / opt.p**2)
 
     # model
-    model = ViT(opt.p, opt.model_dim, opt.hidden_dim, opt.n_class, opt.n_heads, opt.n_layers, n_patches, opt.dropout_p, opt.training_phase, opt.pool)
+    model = ViT(opt.p, opt.model_dim, opt.hidden_dim, opt.n_class, opt.n_heads, opt.n_layers, n_patches, opt.dropout_p, opt.training_phase, opt.pool, opt.drop_hidden)
     model = model.to(device)
     
     # optimizer
@@ -137,7 +139,8 @@ def main():
     wandb.init(project=opt.prj_name, name=opt.exp_name, entity="yoojlee", config=vars(opt))
 
     # device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda:1" if torch.cuda.is_available() else "cpu"
+    print(device)
 
     # data loading
     dataset_module = import_module("dataset")

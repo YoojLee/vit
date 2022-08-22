@@ -45,7 +45,7 @@ def arg_parse():
     parser.add_argument('--p', type=int, default=16)
     parser.add_argument('--dropout_p', type=float, default=.1)
     parser.add_argument('--pool', type=str, default='mean') # gap 적용해보기
-    parser.add_argument('--drop_hidden', type=bool, default=True) # classification head에서 hidden layer drop
+    parser.add_argument('--drop_hidden', type=bool, default=False) # classification head에서 hidden layer drop
 
     # train.py 관련 하이퍼 파라미터
     parser.add_argument('--lr', type=float, default=0.003)
@@ -55,10 +55,16 @@ def arg_parse():
     parser.add_argument('--weight_decay', type=float, default=.3)
     parser.add_argument('--b1', type=float, default=.9)
     parser.add_argument('--b2', type=float, default=.999)
-    parser.add_argument('--lr_scheduler', type=str, default='WarmupCosineAnnealing')
-    parser.add_argument('--warmup_steps', type=int, default=10000)
     parser.add_argument('--max_norm', type=int, default=1, help="max norm for gradient clipping")
     parser.add_argument('--accumulation_steps', type=int, default=32)
+
+    # scheduler.py 관련 하이퍼 파라미터
+    parser.add_argument('--lr_scheduler', type=str, default='WarmupCosineAnnealing')
+    parser.add_argument('--warmup_steps', type=int, default=10000)
+    parser.add_argument('--period', type=int, default=-1)
+    parser.add_argument('--warmup_restart', type=int, default=2000)
+    parser.add_argument('--cycle_factor', type=float, default=1.0)
+    parser.add_argument('--lr_verbose', type=bool, default=False)
 
     # miscellaneous
     parser.add_argument("--is_train", type=bool, default=True)
@@ -78,7 +84,7 @@ def arg_parse():
     parser.add_argument("--exp_name", type=str, default="exp1")
     parser.add_argument("--log_interval", type=int, default=25)
     parser.add_argument("--sample_save_dir", type=str, default='test_results/') # only for test.py
-    parser.add_argument("--last_checkpoint_dir", type=str, default="weights/exp1")
+    parser.add_argument("--last_checkpoint_dir", type=str, default="/home/workspace/weights/imagenet_cls_token/vit_98_0.66482.pt")
     parser.add_argument("--checkpoint_dir", type=str, default="weights")
     parser.add_argument("--load_epoch", type=int, default=150)
     parser.add_argument("--resume_from", action="store_true")
@@ -95,9 +101,15 @@ def save_checkpoint(checkpoint, saved_dir, file_name):
     torch.save(checkpoint, output_path)
 
 
-def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
+def load_checkpoint(checkpoint_path, model, optimizer, scheduler, rank=-1):
     # load model if resume_from is set
-    checkpoint = torch.load(checkpoint_path)
+    
+    if rank != -1: # distributed
+        map_location = {"cuda:%d" % 0: 'cuda:%d' % rank}
+        checkpoint = torch.load(checkpoint_path, map_location=map_location)
+    else:
+        checkpoint = torch.load(checkpoint_path)    
+        
     model.load_state_dict(checkpoint['model'])
     start_epoch = checkpoint['epoch']
 
