@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from collections import OrderedDict
 
+from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 
 class Embeddings(nn.Module):
@@ -40,7 +41,8 @@ class Embeddings(nn.Module):
         b, _, _ = proj.shape
 
         # embedding
-        cls_token = self.cls_token.repeat(b,1,1) # 이렇게 해야 b,1,model_dim으로 됨.
+        # cls_token = self.cls_token.repeat(b,1,1) # 이렇게 해야 b,1,model_dim으로 됨.
+        cls_token = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
 
         # summation
         patch_emb = torch.cat((cls_token, proj), dim = 1)
@@ -64,43 +66,50 @@ class MSA(nn.Module):
         self.n_heads = n_heads
         self.dropout_p = dropout_p
         self.drop_hidden = drop_hidden
-        self.scale = (model_dim/n_heads) ** -0.5
+        self.scale = (model_dim//n_heads) ** -0.5
 
         self.norm = nn.LayerNorm(model_dim) # LayerNorm은 입력 배치 내에서 통계량을 계산하는 것.
+        self.attend = nn.Softmax(dim=-1)
         self.linear_qkv = nn.Linear(model_dim, 3*model_dim, bias=False)# [U_qkv] for changing the dimension 
-        self.projection = nn.Identity() if self.drop_hidden else nn.Linear(model_dim, model_dim)
+        self.projection = nn.Identity() if self.drop_hidden else nn.Sequential(nn.Linear(model_dim, model_dim), nn.Dropout(dropout_p))
+
     
     def forward(self, z):
         b,n,_ = z.shape
-        qkv = self.linear_qkv(self.norm(z)) # [B, N, 3*D_h] -> 3개의 [B,k,N,D_h]로 쪼개는 게 목표임
+        # [B, N, 3*D] -> 3개의 [B,k,N,D_h]로 쪼개는 게 목표
+        qkv = self.linear_qkv(self.norm(z)).chunk(3, dim=-1) # chunk method는 tuple을 리턴함. ([B,N,D],[B,N,D],[B,N,D])
 
         # destack qkv into q,k,v (3 vectors)
-        qkv_destack = qkv.reshape(b,n,3,self.n_heads,-1) # 이렇게 해줘야 b,n 차원은 건드리지 않고 벡터 차원만 가지고 크기 조작이 가능함. 마지막 차원은 d_h와 동일함.
-        q,k,v = qkv_destack.chunk(3, dim=2) # [b,n,1,k,d_h] 차원의 벡터 3개를 리턴
+        # qkv_destack = qkv.reshape(b,n,3,self.n_heads,-1) # 이렇게 해줘야 b,n 차원은 건드리지 않고 벡터 차원만 가지고 크기 조작이 가능함. 마지막 차원은 d_h와 동일함.
+        q,k,v = map(lambda x: rearrange(x, 'b n (h d) -> b h n d', h = self.n_heads), qkv) # [b,n,1,k,d_h] 차원의 벡터 3개를 리턴
         
-        q = q.squeeze().transpose(1,2) # 이 방식은 batch size가 1일 때는 문제가 될 것 같다.
-        k = k.squeeze().transpose(1,2)
-        v = v.squeeze().transpose(1,2)
-        
+        # q = q.squeeze().transpose(1,2) # 이 방식은 batch size가 1일 때는 문제가 될 것 같다.
+        # k = k.squeeze().transpose(1,2)
+        # v = v.squeeze().transpose(1,2)
+
         # q, k attention
-        qk_T = torch.matmul(q,k.mT) # [b,k,n,n]
+        qk_T = torch.matmul(q,k.mT)*self.scale # [b,k,n,n]
     
-        attention = F.softmax(qk_T*self.scale, dim=-1)
+        # attention = F.softmax(qk_T*self.scale, dim=-1)
+        attention = self.attend(qk_T)
 
         if self.dropout_p:
             attention = F.dropout(attention, p=self.dropout_p)
 
         # compute a weighted sum of v
-        msa = torch.matmul(attention, v).transpose(1,2)
+        # msa = torch.matmul(attention, v).transpose(1,2)
+        msa = torch.matmul(attention, v)
+        msa_cat = rearrange(msa, 'b h n d -> b n (h d)')
 
         # concatenate k attention heads
-        msa_cat = msa.reshape(b,n,self.model_dim)
+        # msa_cat = msa.reshape(b,n,self.model_dim)
 
         # projection
         output = self.projection(msa_cat)
 
-        if self.dropout_p:
-            output = F.dropout(output, p=self.dropout_p)
+        # dropout
+        # if self.dropout_p:
+        #     output = F.dropout(output, p=self.dropout_p)
         
         return z+output # skip-connection
     
