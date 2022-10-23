@@ -29,7 +29,7 @@ def arg_parse():
 
     # dataset.py 관련
     parser.add_argument("--data_root", type=str, default="ImageNet")
-    parser.add_argument("--label_info", type=str, default="label.txt")
+    parser.add_argument("--label_info", type=str, default="/home/data/label.txt")
     parser.add_argument("--dataset", type=str, default="ImageNetDataset")
     parser.add_argument("--transforms", type=str, default="BaseTransform")
     parser.add_argument("--resize", type=int, default=256)
@@ -76,8 +76,8 @@ def arg_parse():
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--gpu_id", type=int, nargs='+', default=-1) # if -1, use cpu
     parser.add_argument("--multi_gpu", type=bool, default=True)
-    parser.add_argument("--world_size", type=int, default=1, help="number of machines")
-    parser.add_argument("--rank", type=int, default=0)
+    parser.add_argument("--n_nodes", type=int, default=1, help="number of cluster nodes")
+    parser.add_argument("--node_rank", type=int, default=0, help="a rank of the node")
 
     # wandb & logging
     parser.add_argument("--prj_name", type=str, default="vit")
