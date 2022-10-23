@@ -6,10 +6,8 @@ from utils import *
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torchvision.datasets import CIFAR100
-import torchvision.transforms as tt
 
-import tqdm
+from tqdm import tqdm
 import wandb
 
 def validate(val_loader, model, device):
@@ -24,7 +22,7 @@ def validate(val_loader, model, device):
     total_pred = {classname: 0 for classname in classes}
     n_correct, total = 0,0
 
-    pbar = tqdm.tqdm(enumerate(val_loader), total=len(val_loader))
+    pbar = tqdm(enumerate(val_loader), total=len(val_loader))
 
     with torch.no_grad():
         for step, (patches, labels) in pbar:
@@ -71,7 +69,7 @@ def train(train_loader, val_loader, opt, device, total_len):
     criterion = nn.CrossEntropyLoss()
 
     scheduler_class = getattr(import_module("scheduler"), opt.lr_scheduler)
-    scheduler = scheduler_class(optimizer, opt.warmup_steps, total_len*opt.n_epochs, verbose=False) # 언제 scheduler를 step을 밟아줄지도 되게 애매함. 10k step이면 epoch은 절대 아닐테니까 step looping할 때 iteration을 돌아야 하겠지??
+    scheduler = scheduler_class(optimizer, opt.warmup_steps, opt.period, opt.warmup_restart, cycle_factor=opt.cycle_factor, verbose=opt.lr_verbose) # annealing에 period = total_step으로 넣어주면 cosine decay로 적용될 듯.
     # total steps 같은 경우에는 batch size에 dependent. (전체 이미지 개수 / batch size * num_epochs 하면 total steps가 나오는 듯!)
 
 
@@ -80,7 +78,7 @@ def train(train_loader, val_loader, opt, device, total_len):
         
         model.train() # 매 epoch마다 끝에 validation을 걸어줄 것. 따라서, 매 epoch마다 train 모드로 다시 변경해줘야 함.
         running_loss = 0.0
-        pbar = tqdm.tqdm(enumerate(train_loader), total=len(train_loader))
+        pbar = tqdm(enumerate(train_loader), total=len(train_loader))
 
         for step, (patches, labels) in pbar:
             # gradients flushing
@@ -139,18 +137,11 @@ def main():
     wandb.init(project=opt.prj_name, name=opt.exp_name, entity="yoojlee", config=vars(opt))
 
     # device
-    device = "cuda:1" if torch.cuda.is_available() else "cpu"
+    device = f"cuda:{opt.gpu_id[0]}" if torch.cuda.is_available() else "cpu"
     print(device)
 
     # data loading
-    dataset_module = import_module("dataset")
-    aug_module = import_module("augmentation")
-    augmentation_class = getattr(aug_module, opt.transforms)
-    dataset_class = getattr(dataset_module, opt.dataset)
-
-    augmentation = augmentation_class(opt.resize, opt.crop_size)
-    train_data = dataset_class(opt.data_root, opt.p, opt.is_train, augmentation, opt.label_info, opt.downsample)
-    val_data = dataset_class(opt.data_root, opt.p, not opt.is_train, augmentation, opt.label_info, opt.downsample)
+    train_data, val_data = get_dataset(opt) # 여기가 하나의 병목
 
     # for dataloader reproducibility
     g = torch.Generator()
