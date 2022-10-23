@@ -44,7 +44,7 @@ def arg_parse():
     parser.add_argument('--n_class', type=int, default=1000)
     parser.add_argument('--p', type=int, default=16)
     parser.add_argument('--dropout_p', type=float, default=.1)
-    parser.add_argument('--pool', type=str, default='mean') # gap 적용해보기
+    parser.add_argument('--pool', type=str, default='cls')
     parser.add_argument('--drop_hidden', type=bool, default=False) # classification head에서 hidden layer drop
 
     # train.py 관련 하이퍼 파라미터
@@ -86,7 +86,6 @@ def arg_parse():
     parser.add_argument("--sample_save_dir", type=str, default='test_results/') # only for test.py
     parser.add_argument("--last_checkpoint_dir", type=str, default="/home/workspace/weights/imagenet_cls_token/vit_98_0.66482.pt")
     parser.add_argument("--checkpoint_dir", type=str, default="weights")
-    parser.add_argument("--load_epoch", type=int, default=150)
     parser.add_argument("--resume_from", action="store_true")
 
     opt = parser.parse_args()
