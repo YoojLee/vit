@@ -8,7 +8,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
-from torch.cuda.amp import autocast, GradScaler
 
 from datetime import timedelta
 from tqdm import tqdm
@@ -22,11 +21,11 @@ def main():
     fix_seed(opt.random_seed)
 
     ngpus_per_node = len(opt.gpu_id)
-    opt.world_size = ngpus_per_node * opt.world_size
+    opt.world_size = ngpus_per_node * opt.n_nodes # world_size를 처음에는 nnodes로 받고 그 다음에 world_size로 재정의해주는 방식.
     torch.multiprocessing.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, opt)) # process 뿌려주기
     
 
-def main_worker(gpu, ngpus_per_node, opt):
+def main_worker(local_rank, ngpus_per_node, opt):
     """
     각 process가 수행하는 함수.
 
@@ -35,18 +34,20 @@ def main_worker(gpu, ngpus_per_node, opt):
     global best_top1
     best_top1 = 0.0
 
-    opt.gpu = gpu
-    torch.cuda.set_device(opt.gpu)
+    opt.local_rank = local_rank
+    torch.cuda.set_device(opt.local_rank) 
 
-    print(f"==> Device {opt.gpu} working...")
-    opt.rank = opt.rank * ngpus_per_node + opt.gpu # 원래의 opt.rank는 local rank (해당 노드에서 몇번째 프로세스인지)를 의미하는 듯함.
+    print(f"==> Device {opt.local_rank} working...")
     
+    # define world rank. When nnodes set to 1, local rank and world rank will be same.
+    opt.rank = opt.node_rank * ngpus_per_node + opt.local_rank
     
+    # dist.init_process_group에서는 world_size와 world_rank를 필요로 함.
     dist.init_process_group(
         backend=opt.dist_backend, # nccl: gpu 백엔드
         init_method=f'tcp://127.0.0.1:11203',
         world_size=opt.world_size,
-        rank=opt.rank, # rank가 gpu가 아닌가?
+        rank=opt.rank,
         timeout=timedelta(300)
     )
 
@@ -56,24 +57,22 @@ def main_worker(gpu, ngpus_per_node, opt):
 
     n_patches = int(opt.crop_size**2 / opt.p**2)
     model = ViT(opt.p, opt.model_dim, opt.hidden_dim, opt.n_class, opt.n_heads, opt.n_layers, n_patches, opt.dropout_p, opt.training_phase, opt.pool, opt.drop_hidden)
-    model.cuda(opt.gpu)
+    model.cuda(opt.local_rank)
     batch_size = int(opt.batch_size / ngpus_per_node)
     num_workers = int(opt.num_workers / ngpus_per_node)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[opt.gpu])
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[opt.local_rank]) # DDP requires a local rank
 
     # wandb init
     if opt.rank == 0:
         wandb.init(project=opt.prj_name, name=f"{opt.exp_name}", entity="yoojlee", config=vars(opt))
         wandb.watch(model, log='all', log_freq=opt.log_interval)
 
-    criterion = nn.CrossEntropyLoss(reduction='mean').cuda(opt.gpu)
+    criterion = nn.CrossEntropyLoss(reduction='mean').cuda(opt.local_rank)
     
     # optimizer
     optimizer_class = getattr(import_module("torch.optim"), opt.optimizer)
     optimizer = optimizer_class(model.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2), weight_decay=opt.weight_decay)
 
-    # scaler
-    scaler = GradScaler() 
 
     # dataset
     train_dataset, val_dataset = get_dataset(opt) # 여기가 하나의 병목
@@ -91,8 +90,8 @@ def main_worker(gpu, ngpus_per_node, opt):
 
     # scheduler
     if opt.period == -1:
-        opt.period = int((len(train_dataset) / (opt.batch_size*opt.accumulation_steps)) * opt.n_epochs)
-        if opt.rank == 0:
+        opt.period = int((len(train_dataset) / (opt.batch_size*opt.accumulation_steps)) * opt.n_epochs) - opt.warmup_steps
+        if opt.rank == 0: # master node의 local rank 0에서만 logging.
             wandb.config.update({"period":opt.period}, allow_val_change=True)
 
     scheduler_class = getattr(import_module("scheduler"), opt.lr_scheduler)
@@ -116,14 +115,15 @@ def main_worker(gpu, ngpus_per_node, opt):
         # reset gradients
         optimizer.zero_grad()
 
-        _ = train(train_loader, model, criterion, optimizer, scheduler, scaler, epoch, opt) # model.module과 model의 차이?
+        _ = train(train_loader, model, criterion, optimizer, scheduler, epoch, opt) # model.module과 model의 차이?
         
+        dist.barrier()
         if (opt.rank==0):
             acc_score, _ = validate(val_loader, model, criterion, epoch, opt)
 
             if (best_top1 < acc_score):
                 best_top1 = acc_score
-                print(f"Saving Weights at Accuracy {best_top1}")
+                print(f"Saving Weights at Accuracy {round(best_top1,4)}")
                 save_checkpoint(
                     {
                         'epoch': epoch,
@@ -131,10 +131,10 @@ def main_worker(gpu, ngpus_per_node, opt):
                         'best_top1': best_top1,
                         'optimizer': optimizer.state_dict(),
                         'scheduler': scheduler.state_dict()
-                    }, os.path.join(opt.checkpoint_dir, opt.exp_name), f"vit_{epoch}_{best_top1}.pt" # 이 부분이 문제였음. 애초에 error가 발생해도 프로그램이 멈추는 게 아니라 그냥 계속 좀비 프로세스처럼 남아있는 느낌..?
+                    }, os.path.join(opt.checkpoint_dir, opt.exp_name), f"vit_{epoch}_{round(best_top1, 4)}.pt" 
                 )
             
-                print(f"Best Accuracy: {best_top1}")
+                print(f"Best Accuracy: {round(best_top1,4)}")
 
         torch.cuda.empty_cache()
     
@@ -144,23 +144,25 @@ def main_worker(gpu, ngpus_per_node, opt):
     dist.destroy_process_group()
 
 
-def train(train_loader, model, criterion, optimizer, scheduler, scaler, epoch, opt): # 하나의 epoch 내에서 동작하는 함수
+# 하나의 epoch 내에서 동작하는 train 함수
+def train(train_loader, model, criterion, optimizer, scheduler, epoch, opt):
     model.train()
-    acc_score, running_loss = AverageMeter(), AverageMeter() # 이 부분을 log_interval에서의 average metric으로 사용할 수 있도록 바꿔놔야할 것 같음.
-    pbar = tqdm(enumerate(train_loader), total=len(train_loader)) # 왜인지는 모르겠는데 여기도 하나의 병목
+    acc_score, running_loss = AverageMeter(), AverageMeter()
+    pbar = tqdm(enumerate(train_loader), total=len(train_loader))
 
-    for step, (image, labels) in pbar: # 애초에 여기서 generating이 안됨.
+    # with torch.autograd.profiler.emit_nvtx():
+    for step, (image, labels) in pbar:
         # device에 올려주기
         image = image.cuda()
         labels = labels.cuda()
         
         # forward
-        with autocast():
-            y_pred = model(image)
-            loss = criterion(y_pred, labels) # The input is expected to contain raw, unnormalized scores for each class
-            loss = loss / opt.accumulation_steps
         
-        scaler.scale(loss).backward()
+        y_pred = model(image)
+        loss = criterion(y_pred, labels) # The input is expected to contain raw, unnormalized scores for each class
+        loss = loss / opt.accumulation_steps
+        
+        loss.backward()
 
         running_loss.update(loss.item()*opt.accumulation_steps,  image.size(0))
         acc_score.update(topk_accuracy(y_pred.clone().detach(), labels).item(), image.size(0))
@@ -171,9 +173,8 @@ def train(train_loader, model, criterion, optimizer, scheduler, scaler, epoch, o
             if opt.dataset == "ImageNetDataset":
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=opt.max_norm)
 
-            # optimizer.step()
-            scaler.step(optimizer)
-            scaler.update()
+            # optimizer step
+            optimizer.step()
 
             # scheduler step
             scheduler.step()
@@ -183,20 +184,19 @@ def train(train_loader, model, criterion, optimizer, scheduler, scaler, epoch, o
 
             # logging
             dist.barrier()
-            if (opt.rank == 0) and ((step+1) % opt.log_interval == 0):
+            if (opt.rank == 0) and opt.log_interval > 0:
                 wandb.log(
                         {
                             "Training Loss": round(running_loss.avg, 4),
                             "Training Accuracy": round(acc_score.avg, 4),
-                            # "Learning Rate (from scheduler)": scheduler.get_last_lr()[0]
                             "Learning Rate": optimizer.param_groups[0]['lr']
                         }
                 )
                 running_loss.init()
                 acc_score.init()
 
-        description = f'Epoch: {epoch+1}/{opt.n_epochs} || Step: {(step+1)//opt.accumulation_steps}/{len(train_loader)//opt.accumulation_steps} || Training Loss: {round(running_loss.avg, 4)}'
-        pbar.set_description(description)
+                description = f'Epoch: {epoch+1}/{opt.n_epochs} || Step: {(step+1)//opt.accumulation_steps}/{len(train_loader)//opt.accumulation_steps} || Training Loss: {round(running_loss.avg, 4)}'
+                pbar.set_description(description) # set a progress bar description only under rank 0
 
     return running_loss.avg
 
@@ -206,7 +206,7 @@ def validate(val_loader, model, criterion, epoch, opt):
     losses = AverageMeter()
     acc_score = AverageMeter()
     pbar = tqdm(enumerate(val_loader), total=len(val_loader))
-    
+
     with torch.no_grad():
         for step, (patches, labels) in pbar:
             patches = patches.cuda()
@@ -221,20 +221,17 @@ def validate(val_loader, model, criterion, epoch, opt):
             description = f'Current Epoch: {epoch+1} || Validation Step: {step+1}/{len(val_loader)} || Validation Loss: {round(loss.item(), 4)} || Validation Accuracy: {round(acc_score.avg, 4)}'
             pbar.set_description(description)
 
-    # rank == 0 으로 지정해주지 않으면 wandb init을 시행하지 않은 것으로 간주함.
-    dist.barrier()
-    if opt.rank == 0:
-        wandb.log(
-                {
-                    'Validation Loss': round(losses.avg, 4),
-                    'Validation Accuracy': round(acc_score.avg, 4)
-                }
-            )
+    
+    wandb.log(
+            {
+                'Validation Loss': round(losses.avg, 4),
+                'Validation Accuracy': round(acc_score.avg, 4)
+            }
+        )
 
     return acc_score.avg, losses.avg
 
             
 
 if __name__ == "__main__":
-    os.environ['NCCL_DEBUG']='INFO'
     main()
